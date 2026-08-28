@@ -1,6 +1,6 @@
 const redisClient = require("../config/redis");
 
-function fixedWindowRateLimiter(limit, windowSeconds) {
+function fixedWindowRateLimiter(limit, windowSeconds, policyName = "global") {
     return async (req, res, next) => {
         try {
             // We're identifying the client using its IP.
@@ -9,14 +9,13 @@ function fixedWindowRateLimiter(limit, windowSeconds) {
             const windowId = Math.floor(
                 Date.now() / (windowSeconds * 1000)
             );
-
-            const key = `rate_limit:ip:${identifier}:${windowId}`;
+            // Reddis Key
+            const key = `rate_limit:${policyName}:ip:${identifier}:${windowId}`;
 
             const currentCount = await redisClient.incr(key);
-
+            const windowEnd = (windowId + 1) * windowSeconds * 1000;
             if (currentCount === 1) {
-                const windowEnd = (windowId + 1) * windowSeconds * 1000;
-                const ttlSeconds = Math.ceil(
+                const ttlSeconds = Math.ceil(   
                     (windowEnd - Date.now()) / 1000
                 );
 
@@ -27,6 +26,10 @@ function fixedWindowRateLimiter(limit, windowSeconds) {
 
             res.setHeader("X-RateLimit-Limit", limit);
             res.setHeader("X-RateLimit-Remaining", remaining);
+            res.setHeader(
+                "X-RateLimit-Reset",
+                Math.ceil(windowEnd / 1000)
+            );
 
             if (currentCount > limit) {
                 const retryAfter = await redisClient.ttl(key);
@@ -34,8 +37,9 @@ function fixedWindowRateLimiter(limit, windowSeconds) {
                 res.setHeader("Retry-After", retryAfter);
 
                 return res.status(429).json({
-                    error: "Too many requests"
-                });
+                error: "Too many requests",
+                retryAfter
+            });
             }
 
             next();
