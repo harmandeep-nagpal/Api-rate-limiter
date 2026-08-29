@@ -1,13 +1,24 @@
+require("dotenv").config();
 const express = require("express");
 
 const fixedWindowRateLimiter = require("./middleware/rateLimiter");
+const rateLimitConfig = require("./config/rateLimitConfig");
 
 const app = express();
 
 app.set("trust proxy", 1);
 
-const generalLimiter = fixedWindowRateLimiter(10, 60, "general");
-const strictLimiter = fixedWindowRateLimiter(3, 60, "strict");
+const generalLimiter = fixedWindowRateLimiter(
+    rateLimitConfig.general.limit,
+    rateLimitConfig.general.window,
+    "general"
+);
+
+const strictLimiter = fixedWindowRateLimiter(
+    rateLimitConfig.strict.limit,
+    rateLimitConfig.strict.window,
+    "strict"
+);
 
 app.get("/health", (req, res) => {
     res.json({
