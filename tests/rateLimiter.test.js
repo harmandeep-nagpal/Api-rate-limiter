@@ -293,5 +293,103 @@ describe("Rate Limiter", () => {
 
         expect(response.statusCode).toBe(200);
     });
+    
+    // --------------------------------------------------
+    // TEST 5
+    //
+    // Verify that rate-limit headers are correctly
+    // returned when a request is allowed and when
+    // the limit is exceeded.
+    // --------------------------------------------------
 
+    test("returns correct rate limit headers", async () => {
+
+        const ip = "10.0.0.5";
+
+        // First request
+        const response = await request(app)
+            .get("/api/test")
+            .set("X-Forwarded-For", ip);
+
+        // Request should be allowed
+        expect(response.statusCode).toBe(200);
+
+        // Verify limit
+        expect(response.headers["x-ratelimit-limit"])
+            .toBe("10");
+
+        // First request means 9 remain
+        expect(response.headers["x-ratelimit-remaining"])
+            .toBe("9");
+
+        // Reset header should exist
+        expect(response.headers["x-ratelimit-reset"])
+            .toBeDefined();
+
+        // Send remaining 9 requests
+        for (let i = 0; i < 9; i++) {
+            await request(app)
+                .get("/api/test")
+                .set("X-Forwarded-For", ip);
+        }
+
+        // 11th request should be blocked
+        const blockedResponse = await request(app)
+            .get("/api/test")
+            .set("X-Forwarded-For", ip);
+
+        expect(blockedResponse.statusCode)
+            .toBe(429);
+
+        // Remaining should be zero
+        expect(blockedResponse.headers["x-ratelimit-remaining"])
+            .toBe("0");
+
+        // Retry-After should exist
+        expect(blockedResponse.headers["retry-after"])
+            .toBeDefined();
+
+        // Retry-After should be a positive number
+        expect(Number(blockedResponse.headers["retry-after"]))
+            .toBeGreaterThan(0);
+    });
+        // --------------------------------------------------
+    // TEST 6
+    //
+    // Verify that different IP addresses have
+    // independent rate-limit counters.
+    // --------------------------------------------------
+
+    test("keeps different IP addresses independent", async () => {
+
+        // User A sends 10 requests.
+        for (let i = 0; i < 10; i++) {
+
+            const response = await request(app)
+                .get("/api/test")
+                .set("X-Forwarded-For", "10.0.0.10");
+
+            expect(response.statusCode).toBe(200);
+        }
+
+
+        // User A should now be blocked.
+        const userABlocked = await request(app)
+            .get("/api/test")
+            .set("X-Forwarded-For", "10.0.0.10");
+
+        expect(userABlocked.statusCode).toBe(429);
+
+
+        // User B has a different IP.
+        // Its counter should start from zero.
+        const userBResponse = await request(app)
+            .get("/api/test")
+            .set("X-Forwarded-For", "10.0.0.11");
+
+        expect(userBResponse.statusCode).toBe(200);
+
+        expect(userBResponse.headers["x-ratelimit-remaining"])
+            .toBe("9");
+    });
 });
