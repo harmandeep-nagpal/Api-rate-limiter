@@ -1,0 +1,22 @@
+services:
+
+  api:
+    build: .
+    container_name: api-rate-limiter
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      REDIS_URL: redis://redis:6379
+      GENERAL_RATE_LIMIT: ${GENERAL_RATE_LIMIT}
+      GENERAL_RATE_WINDOW: ${GENERAL_RATE_WINDOW}
+      STRICT_RATE_LIMIT: ${STRICT_RATE_LIMIT}
+      STRICT_RATE_WINDOW: ${STRICT_RATE_WINDOW}
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: api-rate-limiter-redis
+    ports:
+      - "6379:6379"
