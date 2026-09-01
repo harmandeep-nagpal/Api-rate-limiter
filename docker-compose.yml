@@ -3,8 +3,10 @@ services:
   api:
     build: .
     container_name: api-rate-limiter
+
     ports:
       - "3000:3000"
+
     environment:
       PORT: 3000
       REDIS_URL: redis://redis:6379
@@ -12,11 +14,27 @@ services:
       GENERAL_RATE_WINDOW: ${GENERAL_RATE_WINDOW}
       STRICT_RATE_LIMIT: ${STRICT_RATE_LIMIT}
       STRICT_RATE_WINDOW: ${STRICT_RATE_WINDOW}
+
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/ready', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 
   redis:
     image: redis:7-alpine
     container_name: api-rate-limiter-redis
+
     ports:
       - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

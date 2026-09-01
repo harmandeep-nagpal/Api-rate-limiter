@@ -2,7 +2,9 @@ require("dotenv").config();
 const express = require("express");
 
 const fixedWindowRateLimiter = require("./middleware/rateLimiter");
+
 const rateLimitConfig = require("./config/rateLimitConfig");
+const redisClient = require("./config/redis");
 
 const app = express();
 
@@ -24,6 +26,32 @@ app.get("/health", (req, res) => {
     res.json({
         status: "ok"
     });
+});
+
+app.get("/ready", async (req, res) => {
+    try {
+        if (!redisClient.isReady) {
+            return res.status(503).json({
+                status: "not ready",
+                redis: "disconnected"
+            });
+        }
+
+        await redisClient.ping();
+
+        res.json({
+            status: "ready",
+            redis: "connected"
+        });
+
+    } catch (error) {
+        console.error("Readiness check failed:", error);
+
+        res.status(503).json({
+            status: "not ready",
+            redis: "unavailable"
+        });
+    }
 });
 
 app.get(

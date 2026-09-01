@@ -73,12 +73,24 @@ function fixedWindowRateLimiter(limit, windowSeconds, policyName = "global") {
                 "X-RateLimit-Reset",
                 Math.ceil(windowEnd / 1000)
             );
+            console.log(
+                `[RateLimiter] policy=${policyName} ` +
+                `ip=${identifier} ` +
+                `count=${currentCount} ` +
+                `remaining=${remaining}`
+            );
 
             // Reject requests after the limit is exceeded.
             if (currentCount > limit) {
                 const retryAfter =
                     await redisClient.ttl(key);
-
+                console.log(
+                    `[RateLimiter] BLOCKED ` +
+                    `policy=${policyName} ` +
+                    `ip=${identifier} ` +
+                    `count=${currentCount} ` +
+                    `retryAfter=${retryAfter}s`
+                );
                 res.setHeader(
                     "Retry-After",
                     retryAfter

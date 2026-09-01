@@ -392,4 +392,45 @@ describe("Rate Limiter", () => {
         expect(userBResponse.headers["x-ratelimit-remaining"])
             .toBe("9");
     });
+        // --------------------------------------------------
+    // TEST 7
+    //
+    // Verify that the API health endpoint responds
+    // successfully when the application is running.
+    // --------------------------------------------------
+
+    test("health endpoint returns OK", async () => {
+
+        const response = await request(app)
+            .get("/health");
+
+        expect(response.statusCode)
+            .toBe(200);
+
+        expect(response.body)
+            .toEqual({
+                status: "ok"
+            });
+    });
+        // --------------------------------------------------
+    // TEST 8
+    //
+    // Verify that the readiness endpoint confirms
+    // that Redis is connected and available.
+    // --------------------------------------------------
+
+    test("readiness endpoint confirms Redis connection", async () => {
+
+        const response = await request(app)
+            .get("/ready");
+
+        expect(response.statusCode)
+            .toBe(200);
+
+        expect(response.body)
+            .toEqual({
+                status: "ready",
+                redis: "connected"
+            });
+    });
 });
