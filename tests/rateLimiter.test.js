@@ -2,6 +2,7 @@ const request = require("supertest");
 const app = require("../src/app");
 const redisClient = require("../src/config/redis");
 const fixedWindowRateLimiter = require("../src/middleware/rateLimiter");
+const tokenBucketRateLimiter = require("../src/middleware/tokenBucketLimiter");
 const express = require("express");
 
 // --------------------------------------------------
@@ -32,7 +33,32 @@ testApp.get(
         });
     }
 );
+// --------------------------------------------------
+// Create a separate Express app for testing
+// Token Bucket behavior.
+//
+// Configuration:
+// 2 tokens maximum
+// 1 token regenerated per second
+// --------------------------------------------------
 
+const tokenBucketTestApp = express();
+
+const testTokenBucketLimiter = tokenBucketRateLimiter(
+    2,
+    1,
+    "test-token-bucket"
+);
+
+tokenBucketTestApp.get(
+    "/test-token-bucket",
+    testTokenBucketLimiter,
+    (req, res) => {
+        res.json({
+            message: "Token Bucket request allowed"
+        });
+    }
+);
 
 // --------------------------------------------------
 // Rate Limiter Test Suite
@@ -433,4 +459,198 @@ describe("Rate Limiter", () => {
                 redis: "connected"
             });
     });
+    // --------------------------------------------------
+// TEST 9
+//
+// Verify that Token Bucket allows requests while
+// tokens are available.
+//
+// Capacity = 2
+//
+// Request 1 → 200
+// Request 2 → 200
+// --------------------------------------------------
+
+test("Token Bucket allows requests when tokens are available", async () => {
+
+    const response1 = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", "10.0.0.20");
+
+    expect(response1.statusCode).toBe(200);
+
+    const response2 = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", "10.0.0.20");
+
+    expect(response2.statusCode).toBe(200);
+});
+// --------------------------------------------------
+// TEST 10
+//
+// Verify that Token Bucket rejects requests when
+// the bucket has no tokens remaining.
+//
+// Capacity = 2
+//
+// Request 1 → 200
+// Request 2 → 200
+// Request 3 → 429
+// --------------------------------------------------
+
+test("Token Bucket blocks requests when bucket is empty", async () => {
+
+    const ip = "10.0.0.21";
+
+    // Consume first token
+    let response = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", ip);
+
+    expect(response.statusCode).toBe(200);
+
+    // Consume second token
+    response = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", ip);
+
+    expect(response.statusCode).toBe(200);
+
+    // Bucket should now be empty
+    response = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", ip);
+
+    expect(response.statusCode).toBe(429);
+
+    expect(response.body.error)
+        .toBe("Too many requests");
+
+    expect(response.body.retryAfter)
+        .toBeDefined();
+});
+// --------------------------------------------------
+// TEST 11
+//
+// Verify that Token Bucket returns rate-limit
+// headers correctly.
+// --------------------------------------------------
+
+test("Token Bucket returns correct rate limit headers", async () => {
+
+    const ip = "10.0.0.22";
+
+    const response = await request(tokenBucketTestApp)
+        .get("/test-token-bucket")
+        .set("X-Forwarded-For", ip);
+
+    expect(response.statusCode).toBe(200);
+
+    // Bucket capacity
+    expect(response.headers["x-ratelimit-limit"])
+        .toBe("2");
+
+    // First request consumes one token.
+    expect(response.headers["x-ratelimit-remaining"])
+        .toBe("1");
+});
+// --------------------------------------------------
+// TEST 12
+//
+// Verify that Token Bucket refills tokens as time
+// passes.
+//
+// Capacity   = 2
+// Refill     = 1 token/second
+//
+// At t = 1000:
+// Request 1 → 200
+// Request 2 → 200
+// Request 3 → 429
+//
+// At t = 2000:
+// 1 token has regenerated.
+//
+// Request 4 → 200
+// --------------------------------------------------
+
+test("Token Bucket refills tokens over time", async () => {
+
+    const ip = "10.0.0.23";
+
+    // Save the real Date.now function.
+    const realDateNow = Date.now;
+
+    try {
+
+        // ----------------------------------------------
+        // Start at a controlled timestamp.
+        // ----------------------------------------------
+
+        Date.now = () => 1000000;
+
+
+        // ----------------------------------------------
+        // Consume token 1.
+        // ----------------------------------------------
+
+        let response = await request(tokenBucketTestApp)
+            .get("/test-token-bucket")
+            .set("X-Forwarded-For", ip);
+
+        expect(response.statusCode).toBe(200);
+
+
+        // ----------------------------------------------
+        // Consume token 2.
+        // ----------------------------------------------
+
+        response = await request(tokenBucketTestApp)
+            .get("/test-token-bucket")
+            .set("X-Forwarded-For", ip);
+
+        expect(response.statusCode).toBe(200);
+
+
+        // ----------------------------------------------
+        // Bucket is now empty.
+        // ----------------------------------------------
+
+        response = await request(tokenBucketTestApp)
+            .get("/test-token-bucket")
+            .set("X-Forwarded-For", ip);
+
+        expect(response.statusCode).toBe(429);
+
+
+        // ----------------------------------------------
+        // Move clock forward by 1 second.
+        //
+        // Refill rate = 1 token/second
+        //
+        // Therefore:
+        //
+        // 0 tokens + 1 new token = 1 token
+        // ----------------------------------------------
+
+        Date.now = () => 1001000;
+
+
+        // ----------------------------------------------
+        // Token should now be available.
+        // ----------------------------------------------
+
+        response = await request(tokenBucketTestApp)
+            .get("/test-token-bucket")
+            .set("X-Forwarded-For", ip);
+
+        expect(response.statusCode).toBe(200);
+
+    } finally {
+
+        // Always restore the real clock,
+        // even if the test fails.
+        Date.now = realDateNow;
+    }
+});
 });

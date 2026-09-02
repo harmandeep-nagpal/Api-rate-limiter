@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 
 const fixedWindowRateLimiter = require("./middleware/rateLimiter");
+const tokenBucketRateLimiter = require("./middleware/tokenBucketLimiter");
 
 const rateLimitConfig = require("./config/rateLimitConfig");
 const redisClient = require("./config/redis");
@@ -20,6 +21,12 @@ const strictLimiter = fixedWindowRateLimiter(
     rateLimitConfig.strict.limit,
     rateLimitConfig.strict.window,
     "strict"
+);
+
+const tokenBucketLimiter = tokenBucketRateLimiter(
+    rateLimitConfig.tokenBucket.capacity,
+    rateLimitConfig.tokenBucket.refillRate,
+    "token-bucket"
 );
 
 app.get("/health", (req, res) => {
@@ -73,5 +80,13 @@ app.get(
         });
     }
 );
-
+app.get(
+    "/api/token-bucket",
+    tokenBucketLimiter,
+    (req, res) => {
+        res.json({
+            message: "Token Bucket route working"
+        });
+    }
+);
 module.exports = app;

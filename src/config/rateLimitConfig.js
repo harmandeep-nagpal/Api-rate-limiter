@@ -36,7 +36,15 @@ const strict = {
 };
 
 
+// Token Bucket rate-limit configuration
+const tokenBucket = {
+    capacity: getPositiveInteger("TOKEN_BUCKET_CAPACITY"),
+    refillRate: getPositiveInteger("TOKEN_BUCKET_REFILL_RATE")
+};
+
+
 module.exports = {
     general,
-    strict
+    strict,
+    tokenBucket
 };
