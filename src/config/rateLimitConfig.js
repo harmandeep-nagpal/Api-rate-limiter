@@ -42,9 +42,13 @@ const tokenBucket = {
     refillRate: getPositiveInteger("TOKEN_BUCKET_REFILL_RATE")
 };
 
-
+const slidingWindow = {
+    limit: getPositiveInteger("SLIDING_WINDOW_LIMIT"),
+    window: getPositiveInteger("SLIDING_WINDOW_WINDOW")
+};
 module.exports = {
     general,
     strict,
-    tokenBucket
+    tokenBucket,
+    slidingWindow
 };

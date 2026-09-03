@@ -3,6 +3,7 @@ const app = require("../src/app");
 const redisClient = require("../src/config/redis");
 const fixedWindowRateLimiter = require("../src/middleware/rateLimiter");
 const tokenBucketRateLimiter = require("../src/middleware/tokenBucketLimiter");
+const slidingWindowRateLimiter = require("../src/middleware/slidingWindowLimiter");
 const express = require("express");
 
 // --------------------------------------------------
@@ -23,6 +24,23 @@ const shortWindowLimiter = fixedWindowRateLimiter(
     "test-window"
 );
 
+const slidingWindowTestApp = express();
+
+const slidingWindowLimiter = slidingWindowRateLimiter(
+    5,
+    60,
+    "test-sliding-window"
+);
+
+slidingWindowTestApp.get(
+    "/test",
+    slidingWindowLimiter,
+    (req, res) => {
+        res.json({
+            message: "Sliding Window test working"
+        });
+    }
+);
 // Create a test route using the short-window limiter
 testApp.get(
     "/test-window",
@@ -652,5 +670,110 @@ test("Token Bucket refills tokens over time", async () => {
         // even if the test fails.
         Date.now = realDateNow;
     }
+});
+// --------------------------------------------------
+// Sliding Window tests
+// --------------------------------------------------
+
+describe("Sliding Window", () => {
+
+    beforeEach(async () => {
+        await redisClient.flushDb();
+    });
+
+    test("allows requests while under the limit", async () => {
+
+        for (let i = 0; i < 5; i++) {
+
+            const response = await request(
+                slidingWindowTestApp
+            ).get("/test");
+
+            expect(response.status).toBe(200);
+        }
+    });
+
+    test("blocks requests when the window is full", async () => {
+
+        // Consume all 5 requests.
+        for (let i = 0; i < 5; i++) {
+
+            await request(
+                slidingWindowTestApp
+            ).get("/test");
+        }
+
+        // 6th request should be blocked.
+        const response = await request(
+            slidingWindowTestApp
+        ).get("/test");
+
+        expect(response.status).toBe(429);
+
+        expect(response.body.error).toBe(
+            "Too many requests"
+        );
+    });
+
+    test("returns correct rate limit headers", async () => {
+
+        const response = await request(
+            slidingWindowTestApp
+        ).get("/test");
+
+        expect(response.status).toBe(200);
+
+        expect(
+            response.headers["x-ratelimit-limit"]
+        ).toBe("5");
+
+        expect(
+            response.headers["x-ratelimit-remaining"]
+        ).toBe("4");
+    });
+
+    test("removes requests after the sliding window expires", async () => {
+
+        const originalDateNow = Date.now;
+
+        try {
+            // Start at an artificial timestamp.
+            let currentTime = 1000000000000;
+
+            jest.spyOn(Date, "now")
+                .mockImplementation(() => currentTime);
+
+            // Consume all 5 requests.
+            for (let i = 0; i < 5; i++) {
+
+                const response = await request(
+                    slidingWindowTestApp
+                ).get("/test");
+
+                expect(response.status).toBe(200);
+            }
+
+            // At the same time, the bucket/window is full.
+            let response = await request(
+                slidingWindowTestApp
+            ).get("/test");
+
+            expect(response.status).toBe(429);
+
+            // Move time forward by 61 seconds.
+            currentTime += 61000;
+
+            // Old requests should now be removed.
+            response = await request(
+                slidingWindowTestApp
+            ).get("/test");
+
+            expect(response.status).toBe(200);
+
+        } finally {
+            Date.now = originalDateNow;
+        }
+    });
+
 });
 });

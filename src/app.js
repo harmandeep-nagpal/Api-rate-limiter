@@ -3,7 +3,7 @@ const express = require("express");
 
 const fixedWindowRateLimiter = require("./middleware/rateLimiter");
 const tokenBucketRateLimiter = require("./middleware/tokenBucketLimiter");
-
+const slidingWindowRateLimiter = require("./middleware/slidingWindowLimiter");
 const rateLimitConfig = require("./config/rateLimitConfig");
 const redisClient = require("./config/redis");
 
@@ -27,6 +27,12 @@ const tokenBucketLimiter = tokenBucketRateLimiter(
     rateLimitConfig.tokenBucket.capacity,
     rateLimitConfig.tokenBucket.refillRate,
     "token-bucket"
+);
+
+const slidingWindowLimiter = slidingWindowRateLimiter(
+    rateLimitConfig.slidingWindow.limit,
+    rateLimitConfig.slidingWindow.window,
+    "sliding-window"
 );
 
 app.get("/health", (req, res) => {
@@ -86,6 +92,16 @@ app.get(
     (req, res) => {
         res.json({
             message: "Token Bucket route working"
+        });
+    }
+);
+
+app.get(
+    "/api/sliding-window",
+    slidingWindowLimiter,
+    (req, res) => {
+        res.json({
+            message: "Sliding Window route working"
         });
     }
 );
