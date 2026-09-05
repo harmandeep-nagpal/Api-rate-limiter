@@ -1,39 +1,38 @@
 require("dotenv").config();
 const express = require("express");
 
-const fixedWindowRateLimiter = require("./middleware/rateLimiter");
-const tokenBucketRateLimiter = require("./middleware/tokenBucketLimiter");
-const slidingWindowRateLimiter = require("./middleware/slidingWindowLimiter");
-const rateLimitConfig = require("./config/rateLimitConfig");
-const redisClient = require("./config/redis");
+const createRateLimiter =
+    require("./middleware/rateLimiterFactory");
+
+const rateLimitConfig =
+    require("./config/rateLimitConfig");
+
+const redisClient =
+    require("./config/redis");
 
 const app = express();
 
 app.set("trust proxy", 1);
 
-const generalLimiter = fixedWindowRateLimiter(
-    rateLimitConfig.general.limit,
-    rateLimitConfig.general.window,
-    "general"
-);
+const generalLimiter = createRateLimiter({
+    ...rateLimitConfig.general,
+    policyName: "general"
+});
 
-const strictLimiter = fixedWindowRateLimiter(
-    rateLimitConfig.strict.limit,
-    rateLimitConfig.strict.window,
-    "strict"
-);
+const strictLimiter = createRateLimiter({
+    ...rateLimitConfig.strict,
+    policyName: "strict"
+});
 
-const tokenBucketLimiter = tokenBucketRateLimiter(
-    rateLimitConfig.tokenBucket.capacity,
-    rateLimitConfig.tokenBucket.refillRate,
-    "token-bucket"
-);
+const tokenBucketLimiter = createRateLimiter({
+    ...rateLimitConfig.tokenBucket,
+    policyName: "token-bucket"
+});
 
-const slidingWindowLimiter = slidingWindowRateLimiter(
-    rateLimitConfig.slidingWindow.limit,
-    rateLimitConfig.slidingWindow.window,
-    "sliding-window"
-);
+const slidingWindowLimiter = createRateLimiter({
+    ...rateLimitConfig.slidingWindow,
+    policyName: "sliding-window"
+});
 
 app.get("/health", (req, res) => {
     res.json({

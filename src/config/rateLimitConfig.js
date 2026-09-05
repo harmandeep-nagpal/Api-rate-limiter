@@ -24,6 +24,7 @@ function getPositiveInteger(name) {
 
 // General API rate-limit configuration
 const general = {
+    algorithm: "fixed-window",
     limit: getPositiveInteger("GENERAL_RATE_LIMIT"),
     window: getPositiveInteger("GENERAL_RATE_WINDOW")
 };
@@ -31,6 +32,7 @@ const general = {
 
 // Strict API rate-limit configuration
 const strict = {
+    algorithm: "fixed-window",
     limit: getPositiveInteger("STRICT_RATE_LIMIT"),
     window: getPositiveInteger("STRICT_RATE_WINDOW")
 };
@@ -38,14 +40,17 @@ const strict = {
 
 // Token Bucket rate-limit configuration
 const tokenBucket = {
+    algorithm: "token-bucket",
     capacity: getPositiveInteger("TOKEN_BUCKET_CAPACITY"),
     refillRate: getPositiveInteger("TOKEN_BUCKET_REFILL_RATE")
 };
 
 const slidingWindow = {
+    algorithm: "sliding-window",
     limit: getPositiveInteger("SLIDING_WINDOW_LIMIT"),
     window: getPositiveInteger("SLIDING_WINDOW_WINDOW")
 };
+
 module.exports = {
     general,
     strict,
