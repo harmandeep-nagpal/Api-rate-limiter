@@ -3,12 +3,24 @@ const path = require("path");
 
 const redisClient = require("../config/redis");
 
+// Shared HTTP response helpers.
+// These keep the response format consistent across
+// Fixed Window, Token Bucket, and Sliding Window.
+const {
+    setRateLimitHeaders,
+    sendRateLimitExceeded
+} = require("./rateLimitResponse");
+
+
 // Load the Lua script once when the application starts.
-// We don't want to read the file from disk on every request.
+//
+// We don't want to read the Lua file from disk
+// on every incoming request.
 const tokenBucketScript = fs.readFileSync(
     path.join(__dirname, "../algorithms/tokenBucket.lua"),
     "utf8"
 );
+
 
 function tokenBucketRateLimiter(
     capacity,
@@ -16,19 +28,31 @@ function tokenBucketRateLimiter(
     policyName = "token-bucket"
 ) {
     return async (req, res, next) => {
+
         try {
+
             // Identify the client using its IP address.
             const identifier = req.ip;
 
-            // Unique Redis key for this client and policy.
+
+            // Create a unique Redis key for this
+            // client and rate-limit policy.
+            //
+            // Example:
+            // rate_limit:token-bucket:ip:127.0.0.1
             const key =
                 `rate_limit:${policyName}:ip:${identifier}`;
 
-            // Current time in milliseconds.
+
+            // Current timestamp in milliseconds.
+            //
+            // This is passed to Lua so it can calculate
+            // how many tokens should have been refilled.
             const now = Date.now();
 
+
             /*
-             * Execute the Lua script atomically.
+             * Execute the Token Bucket Lua script atomically.
              *
              * KEYS[1] -> Redis key
              *
@@ -48,24 +72,42 @@ function tokenBucketRateLimiter(
                 }
             );
 
-            // Lua returns:
-            //
-            // {1, remainingTokens} -> allowed
-            // {0, remainingTokens} -> rejected
+
+            /*
+             * Lua returns two values:
+             *
+             * {1, remainingTokens} -> request allowed
+             * {0, remainingTokens} -> request rejected
+             */
             const allowed = Number(result[0]);
             const remaining = Number(result[1]);
 
-            // Send rate-limit information to the client.
-            res.setHeader(
-                "X-RateLimit-Limit",
-                capacity
+
+            // Token Bucket can contain fractional tokens internally.
+            //
+            // For the HTTP header, we expose only the whole number
+            // of tokens available to the client.
+            const remainingRequests =
+                Math.floor(remaining);
+
+
+            // Token Bucket does not have a fixed reset time
+            // because tokens continuously refill.
+            //
+            // Therefore, we only set the common Limit and
+            // Remaining headers here.
+            setRateLimitHeaders(
+                res,
+                capacity,
+                remainingRequests,
+                Math.ceil(
+                    (1 - remaining) / refillRate +
+                    Date.now() / 1000
+                )
             );
 
-            res.setHeader(
-                "X-RateLimit-Remaining",
-                Math.floor(remaining)
-            );
 
+            // Log the current Token Bucket state.
             console.log(
                 `[TokenBucket] ` +
                 `policy=${policyName} ` +
@@ -73,19 +115,32 @@ function tokenBucketRateLimiter(
                 `remaining=${remaining}`
             );
 
-            // Reject if there isn't enough capacity.
+
+            // If there isn't at least one token available,
+            // reject the request.
             if (allowed === 0) {
-                // Calculate approximately how long until
-                // one token becomes available.
+
+                /*
+                 * Calculate approximately how many seconds
+                 * are needed for one token to become available.
+                 *
+                 * Example:
+                 *
+                 * remaining = 0.2
+                 * refillRate = 2 tokens/sec
+                 *
+                 * tokens needed = 1 - 0.2 = 0.8
+                 *
+                 * wait time = 0.8 / 2 = 0.4 sec
+                 *
+                 * Math.ceil() gives 1 second.
+                 */
                 const retryAfter = Math.ceil(
                     (1 - remaining) / refillRate
                 );
 
-                res.setHeader(
-                    "Retry-After",
-                    Math.max(1, retryAfter)
-                );
 
+                // Log the rejected request.
                 console.log(
                     `[TokenBucket] BLOCKED ` +
                     `policy=${policyName} ` +
@@ -94,28 +149,51 @@ function tokenBucketRateLimiter(
                     `retryAfter=${retryAfter}s`
                 );
 
-                return res.status(429).json({
-                    error: "Too many requests",
-                    message:
-                        "Rate limit exceeded. Try again later.",
-                    retryAfter: Math.max(1, retryAfter)
-                });
+
+                // Send the standardized 429 response.
+                //
+                // This automatically adds:
+                //
+                // Retry-After
+                //
+                // and returns:
+                //
+                // {
+                //     error: "Too many requests",
+                //     message: "...",
+                //     retryAfter: ...
+                // }
+                return sendRateLimitExceeded(
+                    res,
+                    retryAfter
+                );
             }
 
-            // Request is allowed.
+
+            // Token was available.
+            // Allow the request to continue to the route.
             next();
 
+
         } catch (error) {
+
+            // Log Redis or rate-limiter errors.
             console.error(
                 "Token Bucket rate limiter error:",
                 error
             );
 
+
             // Fail open:
-            // If Redis fails, allow the request.
+            //
+            // If Redis becomes unavailable,
+            // allow the request instead of taking
+            // down the API.
             next();
         }
     };
 }
 
+
+// Export the Token Bucket middleware.
 module.exports = tokenBucketRateLimiter;
