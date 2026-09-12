@@ -6,7 +6,7 @@ const http = require("http");
 // ============================================================
 
 // API endpoint we want to benchmark.
-const URL = "http://localhost:3000/api/sliding-window";
+const URL = "http://localhost:3000/api/token-bucket";
 
 // Number of requests to send.
 const TOTAL_REQUESTS = 100;

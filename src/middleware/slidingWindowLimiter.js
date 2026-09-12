@@ -12,6 +12,15 @@ const {
     sendRateLimitExceeded
 } = require("./rateLimitResponse");
 
+// Metrics.
+//
+// These functions record how many requests are
+// allowed or rejected by this policy.
+const {
+    recordAllowed,
+    recordRejected
+} = require("../monitoring/metrics");
+
 
 // Load the Lua script once when the application starts.
 //
@@ -164,6 +173,16 @@ function slidingWindowRateLimiter(
             if (allowed === 0) {
 
                 /*
+                 * Record this request as rejected.
+                 *
+                 * This increments both:
+                 * - total rejected requests
+                 * - rejected requests for this policy
+                 */
+                recordRejected(policyName);
+
+
+                /*
                  * At this stage, the exact time until the
                  * oldest request expires is not returned by
                  * our current Lua script.
@@ -197,6 +216,16 @@ function slidingWindowRateLimiter(
                     retryAfter
                 );
             }
+
+
+            /*
+             * Record this request as allowed.
+             *
+             * This increments both:
+             * - total allowed requests
+             * - allowed requests for this policy
+             */
+            recordAllowed(policyName);
 
 
             // Request is allowed.

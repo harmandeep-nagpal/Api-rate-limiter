@@ -1,5 +1,8 @@
 const redisClient = require("../config/redis");
-
+const {
+    recordAllowed,
+    recordRejected
+} = require("../monitoring/metrics");
 // Import shared HTTP response helpers.
 // These handle rate-limit headers and 429 responses.
 const {
@@ -137,7 +140,7 @@ function fixedWindowRateLimiter(
             // If the request exceeds the configured limit,
             // reject it with HTTP 429.
             if (currentCount > limit) {
-
+                recordRejected(policyName);
                 // Find out how many seconds remain
                 // before the current window expires.
                 const retryAfter =
@@ -160,7 +163,8 @@ function fixedWindowRateLimiter(
                     retryAfter
                 );
             }
-
+            // Record the successful request.
+            recordAllowed(policyName);
 
             // Request is allowed.
             // Continue to the next middleware/route.

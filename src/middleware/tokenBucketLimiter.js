@@ -4,12 +4,22 @@ const path = require("path");
 const redisClient = require("../config/redis");
 
 // Shared HTTP response helpers.
-// These keep the response format consistent across
+//
+// These keep the HTTP response format consistent across
 // Fixed Window, Token Bucket, and Sliding Window.
 const {
     setRateLimitHeaders,
     sendRateLimitExceeded
 } = require("./rateLimitResponse");
+
+// Metrics.
+//
+// These functions record how many requests are
+// allowed or rejected by this policy.
+const {
+    recordAllowed,
+    recordRejected
+} = require("../monitoring/metrics");
 
 
 // Load the Lua script once when the application starts.
@@ -94,8 +104,8 @@ function tokenBucketRateLimiter(
             // Token Bucket does not have a fixed reset time
             // because tokens continuously refill.
             //
-            // Therefore, we only set the common Limit and
-            // Remaining headers here.
+            // Therefore, we use a calculated reset reference
+            // based on when the next token becomes available.
             setRateLimitHeaders(
                 res,
                 capacity,
@@ -119,6 +129,16 @@ function tokenBucketRateLimiter(
             // If there isn't at least one token available,
             // reject the request.
             if (allowed === 0) {
+
+                /*
+                 * Record this request as rejected.
+                 *
+                 * This increments both:
+                 * - total rejected requests
+                 * - rejected requests for this policy
+                 */
+                recordRejected(policyName);
+
 
                 /*
                  * Calculate approximately how many seconds
@@ -168,6 +188,16 @@ function tokenBucketRateLimiter(
                     retryAfter
                 );
             }
+
+
+            /*
+             * Record this request as allowed.
+             *
+             * This increments both:
+             * - total allowed requests
+             * - allowed requests for this policy
+             */
+            recordAllowed(policyName);
 
 
             // Token was available.

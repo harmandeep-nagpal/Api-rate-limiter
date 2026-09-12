@@ -1,6 +1,6 @@
 require("dotenv").config();
 const express = require("express");
-
+const { getMetrics } = require("./monitoring/metrics");
 const createRateLimiter =
     require("./middleware/rateLimiterFactory");
 
@@ -104,4 +104,8 @@ app.get(
         });
     }
 );
+
+app.get("/metrics", (req, res) => {
+    res.json(getMetrics());
+});
 module.exports = app;
