@@ -1,6 +1,6 @@
 # 🚦 API Rate Limiter
 
-A production-oriented **API rate limiting service** built with **Node.js**, **Express**, **Redis**, and **Lua**. It implements the **fixed-window algorithm** for distributed request counting, using an atomic Lua script to update counters and expirations safely under concurrent load. The entire stack is containerized with **Docker Compose** for one-command startup.
+A production-oriented **API rate limiting service** built with **Node.js**, **Express**, **Redis**, and **Lua**. It implements **three distributed rate-limiting algorithms** — Fixed Window, Token Bucket, and Sliding Window — behind a common factory interface, using atomic Lua scripts to update counters and expirations safely under concurrent load. The entire stack is containerized with **Docker Compose**, includes health/readiness checks, per-policy metrics, and a benchmarked concurrency test suite.
 
 [![Node.js](https://img.shields.io/badge/Node.js-Backend-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-Framework-000000?logo=express&logoColor=white)](https://expressjs.com/)
@@ -14,20 +14,25 @@ A production-oriented **API rate limiting service** built with **Node.js**, **Ex
 
 - [Features](#-features)
 - [Architecture](#️-architecture)
-- [How Rate Limiting Works](#-how-rate-limiting-works)
+- [Rate-Limiting Algorithms](#-rate-limiting-algorithms)
+- [Algorithm Comparison](#-algorithm-comparison)
 - [Redis Key Structure](#-redis-key-structure)
 - [Atomic Rate Limiting with Lua](#-atomic-rate-limiting-with-lua)
 - [Rate-Limit Policies](#-rate-limit-policies)
 - [API Endpoints](#-api-endpoints)
 - [Rate-Limit Headers](#-rate-limit-headers)
+- [Metrics & Observability](#-metrics--observability)
 - [Rate Limit Exceeded](#-rate-limit-exceeded)
+- [Error Handling](#️-error-handling)
+- [Health & Readiness](#-health--readiness)
 - [Docker Setup](#-docker-setup)
 - [Running the Project](#-running-the-project-with-docker)
 - [Testing the API](#-testing-the-api)
 - [Automated Testing](#-automated-testing)
+- [Benchmark Results](#-benchmark-results)
 - [Project Structure](#-project-structure)
 - [Configuration](#️-configuration)
-- [Error Handling](#️-error-handling)
+- [Design Decisions & Trade-offs](#-design-decisions--trade-offs)
 - [Technologies Used](#-technologies-used)
 - [Future Improvements](#-future-improvements)
 - [Learning Objectives](#-learning-objectives)
@@ -37,79 +42,90 @@ A production-oriented **API rate limiting service** built with **Node.js**, **Ex
 
 ## ✨ Features
 
-- 🚦 Fixed-window API rate limiting
-- ⚡ Redis-backed request counters
+- 🚦 Three interchangeable rate-limiting algorithms: Fixed Window, Token Bucket, Sliding Window
+- 🏭 Factory pattern for selecting and instantiating a policy's algorithm
+- ⚡ Redis-backed distributed counters
 - 🔐 Atomic Redis operations using Lua scripts
-- 🌐 IP-based client identification
-- 🎯 Multiple configurable rate-limit policies
+- 🌐 IP-based client identification, with reverse-proxy support (`TRUST_PROXY`)
+- 🎯 Multiple independently configurable rate-limit policies
 - 📊 Standard rate-limit response headers
 - ⏱️ `Retry-After` support for blocked requests
 - 🔄 Automatic rate-limit window expiration
-- 🧪 Automated tests using Jest and Supertest
-- 🐳 Fully dockerized API and Redis
-- ⚙️ Environment-based configuration
-- 🛡️ Fail-open behavior on Redis errors
+- 📈 Built-in `/metrics` endpoint with per-policy counters
+- 🩺 `/health` and `/ready` endpoints for liveness/readiness
+- 🧪 Automated tests using Jest and Supertest, including concurrency testing
+- 🐳 Fully dockerized API and Redis, with Redis health checks and graceful shutdown
+- ⚙️ Environment-based configuration for every algorithm
+- 🛡️ Fail-open behavior on Redis errors, backed by centralized error handling
 
 ---
 
 ## 🏗️ Architecture
 
 ```text
-                        ┌──────────────────────┐
-                        │        Client        │
-                        │ Browser / API Client  │
-                        └──────────┬───────────┘
-                                   │
-                                   │ HTTP Request
-                                   ▼
-                        ┌──────────────────────┐
-                        │    Express API       │
-                        │      Node.js         │
-                        └──────────┬───────────┘
-                                   │
-                                   ▼
-                        ┌──────────────────────┐
-                        │   Rate Limit         │
-                        │   Middleware         │
-                        └──────────┬───────────┘
-                                   │
-                                   │ Lua Script
-                                   ▼
-                        ┌──────────────────────┐
-                        │        Redis         │
-                        │                      │
-                        │  INCR + EXPIRE       │
-                        │  Atomic Operation    │
-                        └──────────┬───────────┘
-                                   │
-                                   ▼
-                        ┌──────────────────────┐
-                        │   Allow / Reject     │
-                        │                      │
-                        │   200 OK / 429       │
-                        └──────────────────────┘
+                                Client
+                                  │
+                                  │ HTTP Request
+                                  ▼
+                         ┌────────────────┐
+                         │  Express API   │
+                         └───────┬────────┘
+                                 │
+                                 ▼
+                        ┌──────────────────┐
+                        │  Rate Limit      │
+                        │  Factory         │
+                        └────────┬─────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+       Fixed Window        Token Bucket       Sliding Window
+              │                  │                  │
+              └──────────────────┼──────────────────┘
+                                 ▼
+                          ┌─────────────┐
+                          │ Redis + Lua │
+                          │  (atomic)   │
+                          └──────┬──────┘
+                                 │
+                                 ▼
+                        ┌──────────────────┐
+                        │  Allow / Reject  │
+                        │   200 / 429      │
+                        └────────┬─────────┘
+                                 │
+                                 ▼
+                             Metrics
 ```
+
+The rate-limit factory selects the configured algorithm per policy at request time, and each algorithm implementation shares the same Redis + Lua execution path, so adding a new algorithm doesn't touch the middleware or routing layer.
 
 ---
 
-## 🧠 How Rate Limiting Works
+## 🧠 Rate-Limiting Algorithms
 
-This project uses the **fixed-window** rate limiting algorithm.
+The service supports three algorithms, selectable per policy:
 
-Example: `Limit = 10 requests`, `Window = 60 seconds`
+### Fixed Window
+Counts requests within fixed, non-overlapping time windows (e.g. 0–60s, 60–120s). Simple and cheap, but can allow bursts at window boundaries.
 
-A client can make up to 10 requests during the current 60-second window.
+### Token Bucket
+Each client has a bucket that refills continuously at a fixed rate. Requests consume tokens; if the bucket is empty, the request is rejected. Naturally allows short bursts while enforcing a long-term average rate.
 
-| Request | Response | Remaining |
-|---------|----------|-----------|
-| 1       | 200 OK   | 9         |
-| 2       | 200 OK   | 8         |
-| 3       | 200 OK   | 7         |
-| ...     | ...      | ...       |
-| 10      | 200 OK   | 0         |
-| 11      | 429      | Too Many Requests |
+### Sliding Window
+Tracks requests over a rolling time window rather than a fixed boundary, giving smoother, more accurate limiting than Fixed Window without the burst-tolerance of Token Bucket.
 
-When the window expires, Redis automatically removes the counter and a new window begins.
+All three algorithms are implemented as atomic Redis Lua scripts to guarantee correctness under concurrent access.
+
+---
+
+## ⚖️ Algorithm Comparison
+
+| Algorithm       | Best for             | Behavior                                     |
+|-----------------|-----------------------|-----------------------------------------------|
+| Fixed Window    | Simple quotas         | Counts requests in fixed time boundaries       |
+| Token Bucket    | Burst traffic         | Allows bursts, refills continuously over time  |
+| Sliding Window  | Smooth, accurate limiting | Tracks requests over a rolling window       |
 
 ---
 
@@ -118,40 +134,29 @@ When the window expires, Redis automatically removes the counter and a new windo
 Each rate-limit counter is stored using a key composed of:
 
 - Rate-limit policy
+- Algorithm
 - Client IP address
-- Current window ID
+- Current window / bucket identifier
 
 **Structure:**
 ```text
-rate_limit:<policy>:ip:<ip>:<windowId>
+rate_limit:<policy>:<algorithm>:ip:<ip>:<windowId>
 ```
 
 **Example:**
 ```text
-rate_limit:general:ip:10.0.0.1:29384723
+rate_limit:strict:sliding-window:ip:10.0.0.1:29384723
 ```
 
-This allows different users and different rate-limit policies to maintain fully independent counters.
+This allows different users, policies, and algorithms to maintain fully independent counters.
 
 ---
 
 ## ⚡ Atomic Rate Limiting with Lua
 
-The rate limiter uses a Redis Lua script to perform the counter update and expiration logic **atomically**.
+Each algorithm's counter update and expiration logic runs **atomically** inside a Redis Lua script, so it executes as a single, uninterruptible operation on the Redis server — critical once multiple algorithms and concurrent clients are involved.
 
-The script:
-
-```text
-INCR
-  ↓
-Check if this is the first request
-  ↓
-EXPIRE if necessary
-  ↓
-Return current request count
-```
-
-Conceptually:
+Conceptually, for Fixed Window:
 
 ```lua
 local currentCount = redis.call("INCR", KEYS[1])
@@ -163,20 +168,22 @@ end
 return currentCount
 ```
 
+Token Bucket and Sliding Window use their own Lua scripts to manage refill rate and rolling timestamps respectively, but follow the same principle: read, update, and expire in one atomic round-trip.
+
 ### Why Lua?
 
-Without atomic execution, `INCR` and `EXPIRE` would run as two separate operations. If a failure occurred between them, a counter could be created without ever receiving an expiration — leaking keys and breaking the rate-limit window. Executing both commands inside a single Lua script guarantees they run as one atomic unit on the Redis server.
+Without atomic execution, counter updates and expirations would run as separate operations. A failure between them could leak keys without an expiration, or let two concurrent requests read a stale count. Running the logic inside a single Lua script guarantees correctness under concurrent load.
 
 ---
 
 ## 🎯 Rate-Limit Policies
 
-The application currently supports two policies, each independently configurable via environment variables.
+The application supports multiple policies, each independently configurable, and each can be assigned any of the three algorithms.
 
-| Policy  | Limit         | Window        |
-|---------|---------------|---------------|
-| General | Configurable  | Configurable  |
-| Strict  | Configurable  | Configurable  |
+| Policy  | Algorithm (example) | Limit / Rate  | Window / Refill |
+|---------|----------------------|----------------|-------------------|
+| General | Configurable          | Configurable   | Configurable      |
+| Strict  | Configurable          | Configurable   | Configurable      |
 
 **Example:**
 ```env
@@ -185,9 +192,13 @@ GENERAL_RATE_WINDOW=60
 
 STRICT_RATE_LIMIT=3
 STRICT_RATE_WINDOW=60
-```
 
-This allows different API routes to carry different levels of protection.
+TOKEN_BUCKET_CAPACITY=10
+TOKEN_BUCKET_REFILL_RATE=1
+
+SLIDING_WINDOW_LIMIT=5
+SLIDING_WINDOW_SIZE=60
+```
 
 ---
 
@@ -201,6 +212,20 @@ GET /health
 ```json
 {
   "status": "ok"
+}
+```
+
+### Readiness Check
+```http
+GET /ready
+```
+Confirms the service and its Redis connection are ready to accept traffic.
+
+**Response**
+```json
+{
+  "status": "ready",
+  "redis": "connected"
 }
 ```
 
@@ -230,6 +255,24 @@ Protected by the strict rate limiter.
 }
 ```
 
+### Token Bucket API
+```http
+GET /api/token-bucket
+```
+Protected by the token-bucket rate limiter, allowing short bursts within the configured capacity.
+
+### Sliding Window API
+```http
+GET /api/sliding-window
+```
+Protected by the sliding-window rate limiter for smoother, rolling-window enforcement.
+
+### Metrics
+```http
+GET /metrics
+```
+Returns aggregate and per-policy request counters (see [Metrics & Observability](#-metrics--observability)).
+
 ---
 
 ## 📊 Rate-Limit Headers
@@ -238,10 +281,33 @@ Every request that passes through the rate limiter receives the following header
 
 | Header                  | Description                                              | Example                     |
 |--------------------------|-----------------------------------------------------------|------------------------------|
-| `X-RateLimit-Limit`      | Maximum number of requests allowed in the current window | `X-RateLimit-Limit: 10`     |
-| `X-RateLimit-Remaining`  | Number of requests remaining in the current window       | `X-RateLimit-Remaining: 7`  |
-| `X-RateLimit-Reset`      | Unix timestamp when the current window resets            | `X-RateLimit-Reset: 1788115860` |
+| `X-RateLimit-Limit`      | Maximum number of requests allowed in the current window/bucket | `X-RateLimit-Limit: 10`     |
+| `X-RateLimit-Remaining`  | Number of requests remaining                              | `X-RateLimit-Remaining: 7`  |
+| `X-RateLimit-Reset`      | Unix timestamp when the current window/bucket resets      | `X-RateLimit-Reset: 1788115860` |
 | `Retry-After`            | Seconds to wait before retrying (only on 429 responses)  | `Retry-After: 48`           |
+
+---
+
+## 📈 Metrics & Observability
+
+The `/metrics` endpoint exposes aggregate and per-policy counters so rate-limiting behavior can be inspected at runtime:
+
+```json
+{
+  "allowedRequests": 22,
+  "rejectedRequests": 95,
+  "totalRequests": 117,
+  "allowedByPolicy": {
+    "token-bucket": 17,
+    "sliding-window": 5
+  },
+  "rejectedByPolicy": {
+    "sliding-window": 95
+  }
+}
+```
+
+This makes it straightforward to see, per algorithm, how much traffic is being allowed versus rejected — useful both for debugging and for demonstrating algorithm behavior under load.
 
 ---
 
@@ -270,19 +336,48 @@ Retry-After: 48
 
 ---
 
+## 🛡️ Error Handling
+
+The rate limiter is designed to **fail open** if Redis encounters an unexpected error, backed by centralized error-handling middleware:
+
+```text
+Redis Error
+    ↓
+Rate limiter catches error
+    ↓
+Centralized error handler logs/normalizes it
+    ↓
+Request continues
+    ↓
+API remains available
+```
+
+This prevents a Redis outage from taking down the entire API. For production systems, this strategy can be adjusted depending on the security and availability requirements of the application (e.g., failing closed for highly sensitive routes).
+
+---
+
+## 🩺 Health & Readiness
+
+- `GET /health` — liveness probe; confirms the process is running.
+- `GET /ready` — readiness probe; confirms the Redis connection is established, so the service can be safely added to load-balancer rotation only once it's actually able to serve rate-limited traffic.
+
+---
+
 ## 🐳 Docker Setup
 
-The project uses Docker Compose to run both the API and Redis:
+The project uses Docker Compose to run both the API and Redis, including a Redis health check and graceful shutdown handling:
 
 ```text
 Docker Compose
 │
 ├── API Container
 │   ├── Node.js
-│   └── Express.js
+│   ├── Express.js
+│   └── Graceful shutdown
 │
 └── Redis Container
-    └── Redis 7
+    ├── Redis 7
+    └── Health check
 ```
 
 The API communicates with Redis using the Docker Compose service name:
@@ -291,7 +386,7 @@ The API communicates with Redis using the Docker Compose service name:
 redis://redis:6379
 ```
 
-This allows both containers to communicate over the internal Docker network.
+This allows both containers to communicate over the internal Docker network, and the API waits on Redis's health check before accepting traffic.
 
 ---
 
@@ -319,12 +414,19 @@ Create a `.env` file in the project root:
 PORT=3000
 
 REDIS_URL=redis://redis:6379
+TRUST_PROXY=true
 
 GENERAL_RATE_LIMIT=10
 GENERAL_RATE_WINDOW=60
 
 STRICT_RATE_LIMIT=3
 STRICT_RATE_WINDOW=60
+
+TOKEN_BUCKET_CAPACITY=10
+TOKEN_BUCKET_REFILL_RATE=1
+
+SLIDING_WINDOW_LIMIT=5
+SLIDING_WINDOW_SIZE=60
 ```
 
 > ⚠️ Do not commit your `.env` file to GitHub — it is already excluded via `.gitignore`.
@@ -358,7 +460,21 @@ curl http://localhost:3000/health
 }
 ```
 
-### Test the Rate Limiter
+### Readiness Check
+
+```bash
+curl http://localhost:3000/ready
+```
+
+**Expected response:**
+```json
+{
+  "status": "ready",
+  "redis": "connected"
+}
+```
+
+### Test a Rate Limiter
 
 ```bash
 curl -i http://localhost:3000/api/test
@@ -388,11 +504,17 @@ HTTP/1.1 429 Too Many Requests
 }
 ```
 
+### Check Metrics
+
+```bash
+curl http://localhost:3000/metrics
+```
+
 ---
 
 ## 🧪 Automated Testing
 
-The project uses **Jest** for testing and **Supertest** for HTTP endpoint testing.
+The project uses **Jest** for testing and **Supertest** for HTTP endpoint testing, across two suites covering unit and concurrency behavior.
 
 Run the test suite with:
 
@@ -403,17 +525,43 @@ npm test
 The current test suite verifies:
 
 - ✅ Remaining request count
-- ✅ Requests being blocked after the limit
-- ✅ Independent rate-limit policies
-- ✅ Rate-limit window expiration
+- ✅ Requests being blocked after the limit, per algorithm
+- ✅ Independent rate-limit policies and algorithms
+- ✅ Rate-limit window/bucket expiration and refill
 - ✅ Rate-limit response headers
 - ✅ Independent IP-based counters
+- ✅ Concurrent request handling under load
+- ✅ `/health`, `/ready`, and `/metrics` responses
 
 **Current test status:**
 ```text
-Test Suites: 1 passed
-Tests:       6 passed
+Test Suites: 2 passed, 2 total
+Tests:       21 passed, 21 total
 ```
+
+---
+
+## 🏎️ Benchmark Results
+
+Local load tests sending 100 concurrent requests against each algorithm:
+
+**Sliding Window**
+```text
+Successful:     5
+Rate limited:   95
+Unexpected:     0
+Throughput:     ~490 req/sec
+```
+
+**Token Bucket**
+```text
+Successful:     5
+Rate limited:   95
+Unexpected:     0
+Throughput:     ~401 req/sec
+```
+
+> These are local benchmark results from a single-machine test run, meant to demonstrate correctness under concurrency — not universal or absolute performance claims about either algorithm.
 
 ---
 
@@ -427,14 +575,28 @@ Api-rate-limiter/
 │   │   ├── rateLimitConfig.js
 │   │   └── redis.js
 │   │
+│   ├── algorithms/
+│   │   ├── fixedWindow.js
+│   │   ├── tokenBucket.js
+│   │   ├── slidingWindow.js
+│   │   └── rateLimiterFactory.js
+│   │
 │   ├── middleware/
-│   │   └── rateLimiter.js
+│   │   ├── rateLimiter.js
+│   │   └── errorHandler.js
+│   │
+│   ├── monitoring/
+│   │   └── metrics.js
 │   │
 │   ├── app.js
 │   └── server.js
 │
 ├── tests/
-│   └── rateLimiter.test.js
+│   ├── rateLimiter.test.js
+│   └── concurrency.test.js
+│
+├── benchmark/
+│   └── loadTest.js
 │
 ├── Dockerfile
 ├── docker-compose.yml
@@ -451,44 +613,38 @@ Api-rate-limiter/
 
 The application is configured entirely through environment variables:
 
-| Variable              | Description                              |
-|------------------------|-------------------------------------------|
-| `PORT`                 | Port on which the API runs               |
-| `REDIS_URL`            | Redis connection URL                     |
-| `GENERAL_RATE_LIMIT`   | Maximum requests for general routes      |
-| `GENERAL_RATE_WINDOW`  | General rate-limit window (seconds)      |
-| `STRICT_RATE_LIMIT`    | Maximum requests for strict routes       |
-| `STRICT_RATE_WINDOW`   | Strict rate-limit window (seconds)       |
-
-**Example:**
-```env
-PORT=3000
-REDIS_URL=redis://redis:6379
-
-GENERAL_RATE_LIMIT=10
-GENERAL_RATE_WINDOW=60
-
-STRICT_RATE_LIMIT=3
-STRICT_RATE_WINDOW=60
-```
+| Variable                    | Description                                    |
+|------------------------------|-------------------------------------------------|
+| `PORT`                       | Port on which the API runs                     |
+| `REDIS_URL`                  | Redis connection URL                           |
+| `TRUST_PROXY`                | Whether to trust `X-Forwarded-For` when the API sits behind a reverse proxy/load balancer |
+| `GENERAL_RATE_LIMIT`         | Maximum requests for general routes            |
+| `GENERAL_RATE_WINDOW`        | General rate-limit window (seconds)            |
+| `STRICT_RATE_LIMIT`          | Maximum requests for strict routes              |
+| `STRICT_RATE_WINDOW`         | Strict rate-limit window (seconds)             |
+| `TOKEN_BUCKET_CAPACITY`      | Maximum tokens in the bucket                    |
+| `TOKEN_BUCKET_REFILL_RATE`   | Tokens refilled per second                      |
+| `SLIDING_WINDOW_LIMIT`       | Maximum requests within the rolling window      |
+| `SLIDING_WINDOW_SIZE`        | Rolling window size (seconds)                  |
 
 ---
 
-## 🛡️ Error Handling
+## 💡 Design Decisions & Trade-offs
 
-The rate limiter is designed to **fail open** if Redis encounters an unexpected error:
+**Why Redis?**
+Rate-limit state needs to be shared across API instances, so an in-memory counter per process isn't enough once the service is horizontally scaled. Redis provides a fast, shared store for that state.
 
-```text
-Redis Error
-    ↓
-Rate limiter catches error
-    ↓
-Request continues
-    ↓
-API remains available
-```
+**Why Lua?**
+To make multi-step Redis operations (read, update, expire) execute atomically, preventing race conditions under concurrent requests.
 
-This behavior prevents a Redis outage from taking down the entire API. For production systems, this strategy can be adjusted depending on the security and availability requirements of the application (e.g., failing closed for highly sensitive routes).
+**Why fail open?**
+To prioritize API availability over strict enforcement when Redis is unavailable — a rate-limiter outage shouldn't become a full API outage. This is configurable per route for cases that need to fail closed instead.
+
+**Why multiple algorithms?**
+To demonstrate the trade-offs between simple fixed quotas, burst-tolerant token buckets, and smoother rolling-window accuracy, and to let different routes pick the behavior that fits their traffic pattern.
+
+**Why `TRUST_PROXY`?**
+Because the API may run behind a reverse proxy or load balancer, and the rate limiter identifies clients using `req.ip` — which only reflects the real client IP when Express is told to trust the proxy's forwarded headers.
 
 ---
 
@@ -510,19 +666,15 @@ This behavior prevents a Redis outage from taking down the entire API. For produ
 
 ## 📈 Future Improvements
 
+- [ ] Prometheus / OpenTelemetry metrics export
+- [ ] Grafana monitoring dashboard
 - [ ] API-key based rate limiting
 - [ ] User/account-based rate limiting
-- [ ] Token Bucket algorithm
-- [ ] Sliding Window algorithm
-- [ ] Distributed rate limiting across multiple API instances
-- [ ] Redis connection health checks
-- [ ] Prometheus metrics
-- [ ] Grafana monitoring dashboard
-- [ ] Request logging
-- [ ] Docker health checks
+- [ ] Distributed deployment across multiple API instances
 - [ ] CI/CD using GitHub Actions
-- [ ] Production deployment
-- [ ] Rate-limit monitoring dashboard
+- [ ] Production cloud deployment
+- [ ] Persistent metrics storage
+- [ ] Request logging
 
 ---
 
@@ -530,16 +682,17 @@ This behavior prevents a Redis outage from taking down the entire API. For produ
 
 This project was built to explore practical backend and system-design concepts, including:
 
-- API rate limiting strategies
+- API rate limiting strategies (Fixed Window, Token Bucket, Sliding Window)
+- Factory-pattern design for interchangeable algorithms
 - Redis as a distributed data store
-- Fixed-window algorithms
-- TTL-based expiration
-- Atomic operations
-- Redis Lua scripting
-- HTTP response headers
-- HTTP 429 Too Many Requests semantics
-- Middleware architecture
-- Automated API testing
+- TTL-based expiration and rolling-window tracking
+- Atomic operations via Redis Lua scripting
+- HTTP response headers and 429 semantics
+- Observability via a metrics endpoint
+- Health vs. readiness probes
+- Middleware and centralized error-handling architecture
+- Automated and concurrency-based API testing
+- Load testing and throughput benchmarking
 - Docker containerization & networking
 - Environment-based configuration
 - Git/GitHub workflow
@@ -554,4 +707,4 @@ This project was built to explore practical backend and system-design concepts, 
 
 ## ⭐ Project Highlights
 
-A Redis-backed, Lua-powered API rate limiter with configurable policies, automated testing, standard HTTP rate-limit headers, and Docker Compose-based deployment.
+A Redis-backed, Lua-powered API rate limiter supporting Fixed Window, Token Bucket, and Sliding Window algorithms behind a factory interface — with per-policy metrics, health/readiness checks, centralized error handling, benchmarked concurrency tests, and Docker Compose-based deployment.
