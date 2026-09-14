@@ -9,7 +9,8 @@ const {
     setRateLimitHeaders,
     sendRateLimitExceeded
 } = require("./rateLimitResponse");
-
+const handleRateLimiterError =
+    require("./rateLimiterError");
 
 // Lua script for Fixed Window Rate Limiting.
 //
@@ -173,12 +174,11 @@ function fixedWindowRateLimiter(
 
         } catch (error) {
 
-            // Log Redis or rate-limiter errors.
-            console.error(
-                "Rate limiter error:",
-                error
-            );
-
+    handleRateLimiterError(
+        error,
+        "fixed-window",
+        next
+    );
 
             // Fail open:
             // if the limiter itself fails, allow the request

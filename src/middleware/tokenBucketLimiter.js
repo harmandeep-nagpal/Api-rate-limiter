@@ -31,6 +31,8 @@ const tokenBucketScript = fs.readFileSync(
     "utf8"
 );
 
+const handleRateLimiterError =
+    require("./rateLimiterError");
 
 function tokenBucketRateLimiter(
     capacity,
@@ -207,13 +209,11 @@ function tokenBucketRateLimiter(
 
         } catch (error) {
 
-            // Log Redis or rate-limiter errors.
-            console.error(
-                "Token Bucket rate limiter error:",
-                error
+            handleRateLimiterError(
+                error,
+                "token-bucket",
+                next
             );
-
-
             // Fail open:
             //
             // If Redis becomes unavailable,

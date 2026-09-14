@@ -33,20 +33,61 @@ async function startServer() {
 
 async function shutdown(signal) {
 
-    console.log(`${signal} received. Starting graceful shutdown...`);
+    console.log(
+        `${signal} received. Starting graceful shutdown...`
+    );
 
-    if (server) {
-        server.close(() => {
-            console.log("HTTP server closed");
-        });
+    try {
+
+        // Close the HTTP server first.
+        //
+        // This stops the server from accepting new
+        // connections while existing connections are
+        // allowed to finish.
+        if (server) {
+
+            await new Promise((resolve, reject) => {
+
+                server.close((error) => {
+
+                    if (error) {
+                        reject(error);
+                        return;
+                    }
+
+                    console.log("HTTP server closed");
+
+                    resolve();
+                });
+            });
+        }
+
+
+        // Close the Redis connection.
+        //
+        // This allows the Redis client to shut down
+        // cleanly instead of being terminated abruptly.
+        if (redisClient.isOpen) {
+
+            await redisClient.quit();
+
+            console.log("Redis connection closed");
+        }
+
+
+        console.log("Graceful shutdown completed.");
+
+        process.exit(0);
+
+    } catch (error) {
+
+        console.error(
+            "Error during graceful shutdown:",
+            error
+        );
+
+        process.exit(1);
     }
-
-    if (redisClient.isOpen) {
-        await redisClient.quit();
-        console.log("Redis connection closed");
-    }
-
-    process.exit(0);
 }
 
 

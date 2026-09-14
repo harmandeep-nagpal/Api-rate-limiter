@@ -21,7 +21,8 @@ const {
     recordRejected
 } = require("../monitoring/metrics");
 
-
+const handleRateLimiterError =
+    require("./rateLimiterError");
 // Load the Lua script once when the application starts.
 //
 // We don't want to read the Lua file from disk
@@ -235,11 +236,12 @@ function slidingWindowRateLimiter(
 
         } catch (error) {
 
-            // Log Redis or rate-limiter errors.
-            console.error(
-                "Sliding Window rate limiter error:",
-                error
-            );
+    handleRateLimiterError(
+        error,
+        "sliding-window",
+        next
+    );
+
 
 
             // Fail open:
